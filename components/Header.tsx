@@ -1,8 +1,9 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { ChevronRight, User, LogOut } from "lucide-react";
 import { useAuth } from "@/lib/auth";
+import { exportAllFlows } from "@/lib/export";
 import type { Folder } from "@/lib/types";
 
 interface HeaderProps {
@@ -12,6 +13,22 @@ interface HeaderProps {
 
 export default function Header({ breadcrumbs, flowTitle }: HeaderProps) {
   const { user, signOut } = useAuth();
+  const [exporting, setExporting] = useState(false);
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const result = await exportAllFlows();
+      if (result.missingSvg.length > 0) {
+        const list = result.missingSvg.map((t) => `- ${t}`).join("\n");
+        alert(`Exportação concluída, mas ${result.missingSvg.length} SVG(s) não puderam ser baixados:\n${list}`);
+      }
+    } catch (e) {
+      alert(`Falha ao exportar: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <header className="h-16 bg-white border-b border-black flex items-center justify-between px-6 text-black shrink-0">
@@ -76,6 +93,14 @@ export default function Header({ breadcrumbs, flowTitle }: HeaderProps) {
             </div>
             
             <div className="h-8 w-px bg-gray-200" />
+
+            <button
+              onClick={handleExport}
+              disabled={exporting}
+              className="text-[12px] font-bold uppercase underline hover:no-underline disabled:text-gray-400 disabled:no-underline"
+            >
+              {exporting ? "Exportando..." : "Exportar"}
+            </button>
 
             <button
               onClick={signOut}
