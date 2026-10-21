@@ -1,18 +1,18 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
-import type { User } from "@supabase/supabase-js";
+import { logout } from "@/lib/actions/auth";
+import type { SessionUser } from "@/lib/server/session";
 
 interface AuthContextType {
-  user: User | null;
+  user: SessionUser | null;
   loading: boolean;
   signOut: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
-  loading: true,
+  loading: false,
   signOut: async () => {},
 });
 
@@ -20,34 +20,30 @@ export function useAuth() {
   return useContext(AuthContext);
 }
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+/**
+ * A sessão é resolvida no servidor (layout raiz) e entregue como `initialUser`.
+ * Nenhuma credencial ou token é lido pelo navegador: o cookie é HttpOnly.
+ */
+export function AuthProvider({
+  initialUser,
+  children,
+}: {
+  initialUser: SessionUser | null;
+  children: React.ReactNode;
+}) {
+  const [user, setUser] = useState<SessionUser | null>(initialUser);
 
   useEffect(() => {
-    // Get initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-      setLoading(false);
-    });
-
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        setUser(session?.user ?? null);
-      }
-    );
-
-    return () => subscription.unsubscribe();
-  }, []);
+    setUser(initialUser);
+  }, [initialUser]);
 
   const signOut = async () => {
-    await supabase.auth.signOut();
     setUser(null);
+    await logout();
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, signOut }}>
+    <AuthContext.Provider value={{ user, loading: false, signOut }}>
       {children}
     </AuthContext.Provider>
   );

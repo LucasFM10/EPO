@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# modelo de variáveis versionado; /data é o banco local e uploads
+!.env.example
+/data

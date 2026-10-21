@@ -1,0 +1,16 @@
+# Dependências, build e dados locais nunca entram na imagem.
+node_modules
+.next
+data
+out
+.git
+.env
+.env.*
+!.env.example
+drizzle.config.ts
+coverage
+*.log
+npm-debug.log*
+Dockerfile
+docker-compose*.yml
+tests

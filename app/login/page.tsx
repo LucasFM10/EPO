@@ -1,20 +1,17 @@
 "use client";
 
-import React, { useState } from "react";
-import { supabase } from "@/lib/supabase";
+import React, { useActionState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, LogIn, AlertCircle } from "lucide-react";
 
 import { useAuth } from "@/lib/auth";
-import { useEffect } from "react";
+import { login, type LoginState } from "@/lib/actions/auth";
+
+const initialState: LoginState = {};
 
 export default function LoginPage() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [state, formAction, pending] = useActionState(login, initialState);
 
   useEffect(() => {
     if (!authLoading && user) {
@@ -30,39 +27,21 @@ export default function LoginPage() {
     );
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setLoading(true);
-
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (error) {
-      setError(error.message);
-      setLoading(false);
-    } else {
-      router.push("/");
-    }
-  };
-
   return (
     <div className="min-h-screen bg-white flex flex-col items-center pt-20 p-4">
       <div className="mb-8 flex flex-col items-center">
         <img src="/brasão_tjpb.png" alt="Brasão TJPB" className="h-64 w-auto object-contain" />
       </div>
-      
+
       <div className="w-full max-w-sm border border-black p-8 bg-white">
         <div className="mb-8">
           <p className="text-sm font-bold uppercase tracking-tight text-black">Acesso Administrativo</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
-          {error && (
+        <form action={formAction} className="space-y-6">
+          {state.error && (
             <div className="p-3 border border-red-600 text-sm text-red-600 bg-red-50">
-              {error}
+              {state.error}
             </div>
           )}
 
@@ -72,9 +51,9 @@ export default function LoginPage() {
             </label>
             <input
               id="email"
+              name="email"
               type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="username"
               required
               className="w-full px-3 py-2 border border-black text-sm focus:outline-none"
             />
@@ -86,9 +65,9 @@ export default function LoginPage() {
             </label>
             <input
               id="password"
+              name="password"
               type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
               required
               className="w-full px-3 py-2 border border-black text-sm focus:outline-none"
             />
@@ -96,10 +75,10 @@ export default function LoginPage() {
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={pending}
             className="w-full py-2 bg-black text-white text-sm font-bold uppercase hover:bg-gray-800 disabled:bg-gray-400 transition-colors"
           >
-            {loading ? "Carregando..." : "Entrar"}
+            {pending ? "Carregando..." : "Entrar"}
           </button>
         </form>
 

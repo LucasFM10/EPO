@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Barlow, Barlow_Condensed, Poppins } from "next/font/google";
 import { AuthProvider } from "@/lib/auth";
+import { getSessionUser } from "@/lib/server/session";
 import "./globals.css";
 
 const barlow = Barlow({
@@ -30,11 +31,12 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const initialUser = await getSessionUser();
   return (
     <html
       lang="pt-BR"
@@ -42,7 +44,7 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider initialUser={initialUser}>{children}</AuthProvider>
       </body>
     </html>
   );
