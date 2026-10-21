@@ -157,6 +157,18 @@ docker compose --profile admin stop sqlite-web        # encerra
 
 Ele permite consultar tabelas, executar SQL e editar registros. Evite alterações estruturais enquanto a aplicação estiver em uso. Não use o Drizzle Studio.
 
+## Importar a exportação da versão Supabase
+
+O botão **Importar** (ao lado de **Sair**) recebe o .zip gerado pelo botão **Exportar** da branch `main`.
+
+- O arquivo deve conter `epo-export.json` (formato `epo-export`, versão 1) e os SVGs em `svg/<id>.svg`.
+- Os ids originais de pastas e fluxos são preservados.
+- Nada existente é apagado ou alterado. Pastas e fluxos com o mesmo id são pulados, então importar o mesmo arquivo duas vezes não duplica dados.
+- Slugs em conflito recebem sufixo automático.
+- SVGs são validados com as mesmas regras do upload (sem script, iframe, handlers `on*` etc.). SVGs recusados são listados no resumo, e o fluxo é criado sem diagrama.
+- A importação é tudo ou nada: se o banco falhar, os SVGs já gravados são removidos.
+- A rota `POST /api/import` exige sessão e origem igual ao host da requisição. Limite: 200 MB.
+
 ## Arquivos persistentes
 
 - SVGs são gravados em `<DATA_DIR>/uploads/<uuid>.svg`, com nome gerado pelo servidor. O nome do arquivo enviado pelo usuário nunca é usado.

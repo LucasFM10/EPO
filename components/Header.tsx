@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useRef, useState } from "react";
 import { ChevronRight, User, LogOut } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import type { Folder } from "@/lib/types";
@@ -12,6 +12,43 @@ interface HeaderProps {
 
 export default function Header({ breadcrumbs, flowTitle }: HeaderProps) {
   const { user, signOut } = useAuth();
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const res = await fetch("/api/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/zip" },
+        body: file,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Falha ao importar.");
+
+      const lines = [
+        "Importação concluída.",
+        `Pastas: ${data.folders.inserted} criadas, ${data.folders.skipped} já existiam.`,
+        `Fluxos: ${data.flows.inserted} criados, ${data.flows.skipped} já existiam.`,
+        `SVGs gravados: ${data.svgs.written}.`,
+      ];
+      if (data.svgs.invalid.length > 0) {
+        lines.push(`SVGs ignorados (${data.svgs.invalid.length}):`, ...data.svgs.invalid.map((s: string) => `- ${s}`));
+      }
+      if (data.issues.length > 0) {
+        lines.push(`Avisos (${data.issues.length}):`, ...data.issues.map((s: string) => `- ${s}`));
+      }
+      alert(lines.join("\n"));
+      window.location.reload();
+    } catch (err) {
+      alert(`Falha ao importar: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setImporting(false);
+      e.target.value = "";
+    }
+  };
 
   return (
     <header className="h-16 bg-white border-b border-black flex items-center justify-between px-6 text-black shrink-0">
@@ -76,6 +113,21 @@ export default function Header({ breadcrumbs, flowTitle }: HeaderProps) {
             </div>
             
             <div className="h-8 w-px bg-gray-200" />
+
+            <input
+              ref={fileInput}
+              type="file"
+              accept=".zip,application/zip"
+              className="hidden"
+              onChange={handleImport}
+            />
+            <button
+              onClick={() => fileInput.current?.click()}
+              disabled={importing}
+              className="text-[12px] font-bold uppercase underline hover:no-underline disabled:text-gray-400 disabled:no-underline"
+            >
+              {importing ? "Importando..." : "Importar"}
+            </button>
 
             <button
               onClick={signOut}
