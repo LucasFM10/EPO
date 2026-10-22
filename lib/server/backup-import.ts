@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { getSqlite } from "../db";
 import { MAX_BIZAGI_JSON_BYTES, MAX_SVG_BYTES, UPLOADS_DIR } from "./config";
 import { validateSvg } from "./svg";
-import { fileNameFromUploadUrl, resolveUpload, uploadUrl } from "./uploads";
+import { fileNameFromUploadUrl, resolveUpload, uploadUrl, validatePdf } from "./uploads";
 import { uniqueSlug } from "./repo";
 
 /**
@@ -21,7 +21,9 @@ import { uniqueSlug } from "./repo";
  */
 
 export const EXPORT_FORMAT = "epo-export";
-export const EXPORT_VERSION = 1;
+/** v2 acrescenta o PDF de cada fluxo (pdf/<id>.pdf). A v1 continua sendo aceita. */
+export const EXPORT_VERSION = 2;
+const SUPPORTED_VERSIONS = [1, 2];
 export const MAX_IMPORT_BYTES = 200 * 1024 * 1024;
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -32,6 +34,7 @@ export interface ImportReport {
   folders: number;
   flows: number;
   svgs: { written: number; invalid: string[] };
+  pdfs: { written: number; invalid: string[] };
   issues: string[];
 }
 
@@ -48,6 +51,7 @@ interface ExportFlow {
   title: string;
   slug: string;
   svg: string | null;
+  pdf: string | null;
   bizagi_data: Record<string, unknown> | null;
   created_at?: string;
 }
@@ -79,7 +83,9 @@ function parseExport(json: unknown): { folders: ExportFolder[]; flows: ExportFlo
   if (!json || typeof json !== "object") fail("O arquivo epo-export.json não é um objeto JSON.");
   const data = json as Record<string, unknown>;
   if (data.format !== EXPORT_FORMAT) fail("Formato desconhecido: este não é um arquivo de exportação do EPO.");
-  if (data.version !== EXPORT_VERSION) fail(`Versão de exportação não suportada: ${String(data.version)}.`);
+  if (!SUPPORTED_VERSIONS.includes(data.version as number)) {
+    fail(`Versão de exportação não suportada: ${String(data.version)}.`);
+  }
   if (!Array.isArray(data.folders) || !Array.isArray(data.flows)) fail("Exportação sem as listas folders e flows.");
 
   const folders = (data.folders as Record<string, unknown>[]).map((f): ExportFolder => {
@@ -97,6 +103,8 @@ function parseExport(json: unknown): { folders: ExportFolder[]; flows: ExportFlo
     const svg = f.svg == null ? null : String(f.svg);
     const id = assertId(f.id, "ID de fluxo");
     if (svg !== null && svg !== `svg/${id}.svg`) fail(`Caminho de SVG inesperado no fluxo ${id}.`);
+    const pdf = f.pdf == null ? null : String(f.pdf);
+    if (pdf !== null && pdf !== `pdf/${id}.pdf`) fail(`Caminho de PDF inesperado no fluxo ${id}.`);
     if (f.bizagi_data != null && (typeof f.bizagi_data !== "object" || Array.isArray(f.bizagi_data))) {
       fail(`bizagi_data inválido no fluxo ${id}.`);
     }
@@ -106,6 +114,7 @@ function parseExport(json: unknown): { folders: ExportFolder[]; flows: ExportFlo
       title: assertText(f.title, "Título de fluxo"),
       slug: assertText(f.slug, "Slug de fluxo"),
       svg,
+      pdf,
       bizagi_data: (f.bizagi_data as Record<string, unknown> | null) ?? null,
       created_at: typeof f.created_at === "string" ? f.created_at : undefined,
     };
@@ -178,6 +187,7 @@ export async function importExportZip(buffer: Buffer): Promise<ImportReport> {
     folders: 0,
     flows: 0,
     svgs: { written: 0, invalid: [] },
+    pdfs: { written: 0, invalid: [] },
     issues: [],
   };
 
@@ -193,12 +203,14 @@ export async function importExportZip(buffer: Buffer): Promise<ImportReport> {
 
   const sqlite = getSqlite();
   report.removed = { folders: countRows("folders"), flows: countRows("flows") };
-  const oldSvgUrls = (sqlite.prepare("SELECT svg_url FROM flows WHERE svg_url IS NOT NULL").all() as { svg_url: string }[])
-    .map((r) => r.svg_url);
+  const oldFileUrls = (
+    sqlite.prepare("SELECT svg_url, pdf_url FROM flows").all() as { svg_url: string | null; pdf_url: string | null }[]
+  ).flatMap((r) => [r.svg_url, r.pdf_url]).filter((u): u is string => !!u);
 
-  // SVGs novos: validados e gravados antes de tocar no banco.
+  // SVGs e PDFs novos: validados e gravados antes de tocar no banco.
   const writtenFiles: string[] = [];
   const svgUrlByFlow = new Map<string, string | null>();
+  const pdfUrlByFlow = new Map<string, string | null>();
   try {
     fs.mkdirSync(UPLOADS_DIR, { recursive: true });
     for (const flow of usableFlows) {
@@ -233,6 +245,33 @@ export async function importExportZip(buffer: Buffer): Promise<ImportReport> {
       svgUrlByFlow.set(flow.id, uploadUrl(name));
     }
 
+    for (const flow of usableFlows) {
+      if (!flow.pdf) {
+        pdfUrlByFlow.set(flow.id, null);
+        continue;
+      }
+      const entry = zip.file(flow.pdf);
+      if (!entry) {
+        report.pdfs.invalid.push(`${flow.title} (arquivo ausente no zip)`);
+        pdfUrlByFlow.set(flow.id, null);
+        continue;
+      }
+      const data = Buffer.from(await entry.async("uint8array"));
+      const pdfError = validatePdf(data);
+      if (pdfError) {
+        report.pdfs.invalid.push(`${flow.title} (${pdfError})`);
+        pdfUrlByFlow.set(flow.id, null);
+        continue;
+      }
+      const name = `${randomUUID()}.pdf`;
+      const full = resolveUpload(name);
+      if (!full) fail("Nome de arquivo interno inválido.");
+      fs.writeFileSync(full, data);
+      writtenFiles.push(full);
+      report.pdfs.written++;
+      pdfUrlByFlow.set(flow.id, uploadUrl(name));
+    }
+
     sqlite.transaction(() => {
       sqlite.prepare("DELETE FROM flows").run();
       sqlite.prepare("DELETE FROM folders").run();
@@ -244,7 +283,7 @@ export async function importExportZip(buffer: Buffer): Promise<ImportReport> {
       }
 
       const insFlow = sqlite.prepare(
-        "INSERT INTO flows (id, folder_id, title, slug, svg_url, bizagi_data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO flows (id, folder_id, title, slug, svg_url, pdf_url, bizagi_data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
       );
       for (const f of usableFlows) {
         const json = f.bizagi_data == null ? null : JSON.stringify(f.bizagi_data);
@@ -253,7 +292,16 @@ export async function importExportZip(buffer: Buffer): Promise<ImportReport> {
         }
         const slug = uniqueSlug(f.slug);
         if (slug !== f.slug) report.issues.push(`Slug de "${f.title}" ajustado para "${slug}".`);
-        insFlow.run(f.id, f.folder_id, f.title, slug, svgUrlByFlow.get(f.id) ?? null, json, f.created_at ?? new Date().toISOString());
+        insFlow.run(
+          f.id,
+          f.folder_id,
+          f.title,
+          slug,
+          svgUrlByFlow.get(f.id) ?? null,
+          pdfUrlByFlow.get(f.id) ?? null,
+          json,
+          f.created_at ?? new Date().toISOString()
+        );
         report.flows++;
       }
 
@@ -267,7 +315,7 @@ export async function importExportZip(buffer: Buffer): Promise<ImportReport> {
   }
 
   // Commit feito: agora é seguro remover os SVGs que pertenciam aos dados substituídos.
-  for (const url of oldSvgUrls) {
+  for (const url of oldFileUrls) {
     const name = fileNameFromUploadUrl(url);
     const full = name ? resolveUpload(name) : null;
     if (full) fs.rmSync(full, { force: true });

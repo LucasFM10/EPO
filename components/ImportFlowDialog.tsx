@@ -1,326 +1,364 @@
 "use client";
 
-import React, { useState, useRef } from "react";
-import { Upload, Loader2, X, FolderOpen, FileText, Check } from "lucide-react";
-import type { FolderTreeNode } from "@/lib/types";
+import React, { useState } from "react";
+import { Upload, Loader2, X, FolderOpen, FileText, Check, AlertTriangle, Archive } from "lucide-react";
+import type { Flow } from "@/lib/types";
+
+/**
+ * Destino da importação:
+ * - folder: cria um fluxo por página marcada dentro da pasta (botão direito na pasta).
+ * - flow: preenche um fluxo existente com uma página (botão direito no fluxo).
+ */
+export type ImportTarget =
+  | { kind: "folder"; folderId: string; folderName: string; existingTitles: string[] }
+  | { kind: "flow"; flow: Flow };
 
 interface ImportFlowDialogProps {
   open: boolean;
+  target: ImportTarget | null;
   onClose: () => void;
-  tree: FolderTreeNode[];
-  onCreated: () => void;
+  onDone: () => void;
 }
 
-interface ParsedDiagram {
+/** Um arquivo da exportação, com leitura sob demanda (o zip só é lido quando necessário). */
+interface Entry {
+  path: string;
+  read: () => Promise<string>;
+}
+
+interface Diagram {
   name: string;
-  svgFileName: string;
-  svgFile: File | null;
+  svgName: string;
+  svg: Entry | null;
   pageData: Record<string, unknown>;
   selected: boolean;
 }
 
-/**
- * Parses a Bizagi configuration.json.js file content into JSON.
- */
+const normalize = (text: string) => text.trim().toLowerCase();
+const baseName = (path: string) => path.split(/[\\/]/).pop() || "";
+
+/** Remove o prefixo JS ("Bizagi.AppModel = ") e interpreta o JSON. Não executa o arquivo. */
 function parseBizagiConfig(text: string): Record<string, unknown> {
-  // Strip JS prefix like "Bizagi.AppModel = "
-  const prefixMatch = text.match(/^\s*[\w.]+\s*=\s*/);
-  if (prefixMatch) {
-    text = text.slice(prefixMatch[0].length);
-  }
-  // Remove trailing semicolons/whitespace
+  const prefix = text.match(/^\s*[\w.]+\s*=\s*/);
+  if (prefix) text = text.slice(prefix[0].length);
   text = text.replace(/;\s*$/, "").trim();
   return JSON.parse(text);
 }
 
-export default function ImportFlowDialog({ open, onClose, tree, onCreated }: ImportFlowDialogProps) {
-  const [folderId, setFolderId] = useState<string>("");
-  const [diagrams, setDiagrams] = useState<ParsedDiagram[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [parsing, setParsing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [folderName, setFolderName] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+/**
+ * Localiza o modelo. A exportação do Bizagi tem também um key.json.js (configurações de publicação),
+ * que NÃO é o modelo: por isso só aceitamos arquivos cujo nome começa com "configuration".
+ * Prefere o caminho padrão libs/js/json/.
+ */
+function findConfig(entries: Entry[]): Entry | null {
+  const candidates = entries.filter((e) => /(^|\/)configuration\.json(\.js)?$/i.test(e.path));
+  return candidates.find((e) => /libs\/js\/json\//i.test(e.path)) ?? candidates[0] ?? null;
+}
 
-  // Flatten folders for the select dropdown
-  const flattenFolders = (nodes: FolderTreeNode[], depth = 0): { id: string; name: string; depth: number }[] => {
-    const result: { id: string; name: string; depth: number }[] = [];
-    for (const node of nodes) {
-      result.push({ id: node.folder.id, name: node.folder.name, depth });
-      result.push(...flattenFolders(node.children, depth + 1));
-    }
-    return result;
+async function entriesFromFolder(files: FileList): Promise<Entry[]> {
+  return Array.from(files).map((file) => ({
+    path: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+    read: () => file.text(),
+  }));
+}
+
+async function entriesFromZip(file: File): Promise<Entry[]> {
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(file);
+  const out: Entry[] = [];
+  zip.forEach((path, entry) => {
+    if (!entry.dir) out.push({ path, read: () => entry.async("string") });
+  });
+  return out;
+}
+
+async function buildDiagrams(entries: Entry[]): Promise<{ diagrams: Diagram[]; modelName: string }> {
+  const config = findConfig(entries);
+  if (!config) {
+    throw new Error(
+      "Nenhum arquivo de configuração do Bizagi encontrado (configuration.json.js). Use a exportação completa, com a pasta libs/js/json."
+    );
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseBizagiConfig(await config.read());
+  } catch {
+    throw new Error("Não foi possível interpretar o arquivo de configuração do Bizagi.");
+  }
+
+  const pages = (parsed.pages as Record<string, unknown>[] | undefined) ?? [];
+  if (pages.length === 0) throw new Error("Nenhum diagrama encontrado no arquivo de configuração.");
+
+  // SVGs da pasta diagrams/, indexados pelo nome do arquivo (sem diferenciar maiúsculas).
+  const svgs = new Map<string, Entry>();
+  for (const e of entries) {
+    if (/(^|\/)diagrams\//i.test(e.path) && /\.svg$/i.test(e.path)) svgs.set(baseName(e.path).toLowerCase(), e);
+  }
+
+  const diagrams = pages.map((page): Diagram => {
+    const svgName = baseName(String(page.image || ""));
+    return {
+      name: String(page.name || "Sem nome").trim(),
+      svgName,
+      svg: svgs.get(svgName.toLowerCase()) ?? null,
+      pageData: { ...parsed, pages: [page] },
+      selected: true,
+    };
+  });
+
+  return { diagrams, modelName: String(parsed.modelName || "") };
+}
+
+export default function ImportFlowDialog({ open, target, onClose, onDone }: ImportFlowDialogProps) {
+  const [diagrams, setDiagrams] = useState<Diagram[]>([]);
+  const [sourceLabel, setSourceLabel] = useState<string | null>(null);
+  const [chosenIndex, setChosenIndex] = useState(0);
+  const [parsing, setParsing] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!open || !target) return null;
+
+  const reset = () => {
+    setDiagrams([]);
+    setSourceLabel(null);
+    setChosenIndex(0);
+    setError(null);
   };
 
-  const folders = flattenFolders(tree);
+  const handleClose = () => {
+    reset();
+    onClose();
+  };
 
-  const handleFolderSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
+  const loadEntries = async (entries: Promise<Entry[]>, label: string) => {
     setParsing(true);
     setError(null);
     setDiagrams([]);
-
     try {
-      // Find the config file (configuration.json.js or similar)
-      let configFile: File | null = null;
-      const svgFiles = new Map<string, File>();
-
-      for (const file of Array.from(files)) {
-        const name = file.name.toLowerCase();
-        const path = file.webkitRelativePath.toLowerCase();
-
-        // Find the config file
-        if (name.endsWith(".json.js") || name === "configuration.json") {
-          configFile = file;
-        }
-
-        // Collect SVG files from the diagrams folder
-        if (name.endsWith(".svg") && (path.includes("/diagrams/") || path.includes("\\diagrams\\"))) {
-          svgFiles.set(name, file);
-        }
-      }
-
-      if (!configFile) {
-        setError("Nenhum arquivo configuration.json.js encontrado na pasta selecionada.");
-        setParsing(false);
-        return;
-      }
-
-      // Extract folder name from the first file's path
-      const firstPath = Array.from(files)[0].webkitRelativePath;
-      setFolderName(firstPath.split("/")[0] || firstPath.split("\\")[0] || "Pasta");
-
-      // Parse the config
-      const configText = await configFile.text();
-      let config: Record<string, unknown>;
-      try {
-        config = parseBizagiConfig(configText);
-      } catch {
-        setError("Não foi possível interpretar o arquivo de configuração.");
-        setParsing(false);
-        return;
-      }
-
-      // Extract pages/diagrams
-      const pages = (config as any).pages || [];
-      if (pages.length === 0) {
-        setError("Nenhum diagrama encontrado no arquivo de configuração.");
-        setParsing(false);
-        return;
-      }
-
-      const parsed: ParsedDiagram[] = pages.map((page: any) => {
-        // Extract SVG filename from the page image path
-        const imagePath: string = page.image || "";
-        const svgFileName = imagePath.split("\\").pop()?.split("/").pop() || "";
-
-        // Try to match with uploaded SVG files
-        const matchedSvg = svgFiles.get(svgFileName.toLowerCase()) || null;
-
-        return {
-          name: page.name || "Sem nome",
-          svgFileName,
-          svgFile: matchedSvg,
-          pageData: {
-            ...config,
-            pages: [page], // Only this page's data
-          },
-          selected: true, // Selected by default
-        };
-      });
-
+      const { diagrams: parsed } = await buildDiagrams(await entries);
       setDiagrams(parsed);
-    } catch (err: any) {
-      setError(err.message || "Erro ao processar a pasta");
+      setSourceLabel(label);
+      setChosenIndex(0);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao ler a exportação do Bizagi.");
     } finally {
       setParsing(false);
     }
   };
 
-  const toggleDiagram = (index: number) => {
-    setDiagrams((prev) =>
-      prev.map((d, i) => (i === index ? { ...d, selected: !d.selected } : d))
-    );
+  const onFolderChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const root = (files[0] as File & { webkitRelativePath?: string }).webkitRelativePath?.split("/")[0] || "pasta";
+    loadEntries(entriesFromFolder(files), `Pasta: ${root}`);
+    e.target.value = "";
   };
 
-  const selectAll = () => setDiagrams((prev) => prev.map((d) => ({ ...d, selected: true })));
-  const selectNone = () => setDiagrams((prev) => prev.map((d) => ({ ...d, selected: false })));
+  const onZipChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    loadEntries(entriesFromZip(file), `Arquivo: ${file.name}`);
+    e.target.value = "";
+  };
+
+  const toggle = (i: number) =>
+    setDiagrams((prev) => prev.map((d, j) => (j === i ? { ...d, selected: !d.selected } : d)));
+  const rename = (i: number, name: string) =>
+    setDiagrams((prev) => prev.map((d, j) => (j === i ? { ...d, name } : d)));
+  const setAll = (selected: boolean) => setDiagrams((prev) => prev.map((d) => ({ ...d, selected })));
+
+  // Nomes que já existem na pasta, ou repetidos entre os itens marcados, impedem a importação.
+  const existing = new Set(target.kind === "folder" ? target.existingTitles.map(normalize) : []);
+  const selectedNames = diagrams.filter((d) => d.selected).map((d) => normalize(d.name));
+  const conflictOf = (d: Diagram): string | null => {
+    const key = normalize(d.name);
+    if (!key) return "Informe um nome";
+    if (existing.has(key)) return "Já existe um fluxo com este nome nesta pasta";
+    if (selectedNames.filter((n) => n === key).length > 1) return "Nome repetido entre os selecionados";
+    return null;
+  };
 
   const selectedCount = diagrams.filter((d) => d.selected).length;
+  const hasConflicts = diagrams.some((d) => d.selected && conflictOf(d) !== null);
+  const chosen = diagrams[chosenIndex];
 
   const handleImport = async () => {
-    if (!folderId || selectedCount === 0) return;
-
-    setLoading(true);
+    setSubmitting(true);
     setError(null);
-
     try {
-      const { createFlow } = await import("@/lib/mutations");
-      const selected = diagrams.filter((d) => d.selected);
-
-      for (const diagram of selected) {
-        const svgContent = diagram.svgFile ? await diagram.svgFile.text() : null;
-        await createFlow(folderId, diagram.name, diagram.pageData, svgContent);
+      if (target.kind === "folder") {
+        const items = await Promise.all(
+          diagrams
+            .filter((d) => d.selected)
+            .map(async (d) => ({
+              title: d.name.trim(),
+              bizagiJson: d.pageData,
+              svgContent: d.svg ? await d.svg.read() : null,
+            }))
+        );
+        const { createFlowsBatch } = await import("@/lib/mutations");
+        await createFlowsBatch(target.folderId, items);
+      } else {
+        if (!chosen?.svg) throw new Error("A página escolhida não tem o SVG correspondente.");
+        const { attachBizagi } = await import("@/lib/mutations");
+        await attachBizagi(target.flow.id, chosen.pageData, await chosen.svg.read());
       }
-
-      // Reset state
-      setDiagrams([]);
-      setFolderId("");
-      setFolderName(null);
-      if (inputRef.current) inputRef.current.value = "";
-      onCreated();
+      reset();
+      onDone();
       onClose();
-    } catch (err: any) {
-      setError(err.message || "Erro ao importar fluxos");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao importar");
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
-  const handleClose = () => {
-    setDiagrams([]);
-    setFolderId("");
-    setFolderName(null);
-    setError(null);
-    if (inputRef.current) inputRef.current.value = "";
-    onClose();
-  };
+  const canImport =
+    !submitting &&
+    !parsing &&
+    (target.kind === "folder" ? selectedCount > 0 && !hasConflicts : !!chosen?.svg);
 
-  if (!open) return null;
+  const title = target.kind === "folder" ? `Importar Bizagi em "${target.folderName}"` : `Importar Bizagi em "${target.flow.title}"`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px]" onClick={handleClose} />
-      <div className="relative bg-white border border-black p-6 w-full max-w-lg shadow-none max-h-[90vh] flex flex-col">
-        <div className="flex items-center justify-between mb-6 border-b border-black pb-4">
-          <h2 className="text-xl font-bold text-black uppercase tracking-tight">Importar Fluxos (Bizagi)</h2>
-          <button onClick={handleClose} className="text-black hover:bg-gray-100 p-1 transition-colors">
+      <div className="relative bg-white border border-black p-6 w-full max-w-lg text-black max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between mb-5 border-b border-black pb-4">
+          <h2 className="text-lg font-bold uppercase tracking-tight pr-4">{title}</h2>
+          <button onClick={handleClose} className="hover:bg-gray-100 p-1 transition-colors" aria-label="Fechar">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="space-y-6 flex-1 overflow-hidden flex flex-col">
+        <div className="space-y-5 flex-1 min-h-0 flex flex-col">
           {error && (
-            <div className="p-3 bg-white border border-black text-xs font-bold text-black uppercase tracking-tight">{error}</div>
+            <div className="p-3 bg-white border border-black text-xs font-bold uppercase tracking-tight">{error}</div>
           )}
 
-          {/* Folder picker */}
+          {/* Origem */}
           <div className="space-y-2">
-            <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500">Pasta do Bizagi (exportação)</label>
-            <div className="relative">
-              <input
-                ref={inputRef}
-                type="file"
-                /* @ts-expect-error webkitdirectory is valid but not in React types */
-                webkitdirectory=""
-                directory=""
-                onChange={handleFolderSelect}
-                className="w-full text-xs text-black file:mr-3 file:py-2 file:px-4 file:border file:border-black file:text-[10px] file:font-black file:uppercase file:bg-white file:text-black hover:file:bg-black hover:file:text-white file:cursor-pointer file:transition-colors"
-              />
+            <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500">
+              Exportação do Bizagi (pasta ou .zip)
+            </label>
+            <div className="flex flex-wrap gap-3">
+              <label className="inline-flex items-center gap-2 px-3 py-2 border border-black text-[10px] font-black uppercase tracking-widest cursor-pointer hover:bg-gray-100">
+                <FolderOpen className="w-4 h-4" /> Escolher pasta
+                <input
+                  type="file"
+                  /* @ts-expect-error webkitdirectory is valid but not in React types */
+                  webkitdirectory=""
+                  directory=""
+                  onChange={onFolderChosen}
+                  className="hidden"
+                />
+              </label>
+              <label className="inline-flex items-center gap-2 px-3 py-2 border border-black text-[10px] font-black uppercase tracking-widest cursor-pointer hover:bg-gray-100">
+                <Archive className="w-4 h-4" /> Escolher .zip
+                <input type="file" accept=".zip,application/zip" onChange={onZipChosen} className="hidden" />
+              </label>
             </div>
-            {folderName && (
-              <div className="flex items-center gap-2 text-[10px] font-bold text-gray-400 uppercase tracking-tight">
-                <FolderOpen className="w-3 h-3" />
-                <span>{folderName}</span>
+            {sourceLabel && (
+              <div className="text-[10px] font-bold text-gray-500 uppercase tracking-tight">{sourceLabel}</div>
+            )}
+            {parsing && (
+              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest">
+                <Loader2 className="w-4 h-4 animate-spin" /> Lendo exportação...
               </div>
             )}
           </div>
 
-          {/* Destination folder */}
-          <div className="space-y-2">
-            <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500">Pasta de destino</label>
-            <select
-              value={folderId}
-              onChange={(e) => setFolderId(e.target.value)}
-              className="w-full px-3 py-2 bg-white border border-black rounded-none text-xs text-black font-medium focus:outline-none focus:ring-0 transition-colors appearance-none"
-              style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='currentColor'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.75rem center', backgroundSize: '1rem' }}
-            >
-              <option value="">Selecione uma pasta...</option>
-              {folders.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {"  ".repeat(f.depth)} {f.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Loading spinner for parsing */}
-          {parsing && (
-            <div className="flex items-center justify-center gap-2 py-4 border border-black border-dashed">
-              <Loader2 className="w-4 h-4 animate-spin text-black" />
-              <span className="text-[10px] font-black uppercase tracking-widest">Processando pasta...</span>
+          {/* Aviso para importação em fluxo existente */}
+          {target.kind === "flow" && target.flow.svg_url && diagrams.length > 0 && (
+            <div className="flex gap-2 p-3 border border-black text-xs">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>
+                O SVG atual deste fluxo será substituído e os itens clicáveis anteriores serão removidos. O PDF não é afetado.
+              </span>
             </div>
           )}
 
-          {/* Diagram list with checkboxes */}
+          {/* Lista de páginas */}
           {diagrams.length > 0 && (
             <div className="flex-1 flex flex-col min-h-0">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">
-                  Diagramas encontrados ({selectedCount}/{diagrams.length})
+                  {target.kind === "folder"
+                    ? `Diagramas (${selectedCount}/${diagrams.length})`
+                    : "Escolha a página"}
                 </span>
-                <div className="flex gap-3 text-[10px] font-black uppercase tracking-widest">
-                  <button onClick={selectAll} className="text-black hover:underline">
-                    Todos
-                  </button>
-                  <button onClick={selectNone} className="text-gray-400 hover:text-black">
-                    Nenhum
-                  </button>
-                </div>
+                {target.kind === "folder" && (
+                  <div className="flex gap-3 text-[10px] font-black uppercase tracking-widest">
+                    <button onClick={() => setAll(true)} className="hover:underline">Todos</button>
+                    <button onClick={() => setAll(false)} className="text-gray-400 hover:text-black">Nenhum</button>
+                  </div>
+                )}
               </div>
 
-              <div className="flex-1 overflow-y-auto space-y-px border border-black p-1 bg-gray-50">
-                {diagrams.map((d, i) => (
-                  <label
-                    key={i}
-                    className={`flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors border ${
-                      d.selected ? "bg-black border-black text-white" : "hover:bg-white border-transparent text-black"
-                    }`}
-                  >
+              <div className="flex-1 overflow-y-auto border border-black p-1 bg-gray-50 space-y-px">
+                {diagrams.map((d, i) => {
+                  const conflict = target.kind === "folder" && d.selected ? conflictOf(d) : null;
+                  const picked = target.kind === "flow" ? chosenIndex === i : d.selected;
+                  return (
                     <div
-                      className={`w-4 h-4 border flex items-center justify-center shrink-0 transition-colors ${
-                        d.selected
-                          ? "bg-white border-white"
-                          : "border-black bg-white"
+                      key={i}
+                      className={`flex items-start gap-3 px-3 py-2 border ${
+                        picked ? "bg-black border-black text-white" : "bg-white border-transparent text-black"
                       }`}
                     >
-                      {d.selected && <Check className="w-3 h-3 text-black" />}
-                    </div>
-                    <FileText className={`w-4 h-4 shrink-0 ${d.selected ? "text-white" : "text-black"}`} />
-                    <div className="flex-1 min-w-0">
-                      <div className={`text-[11px] truncate font-bold uppercase tracking-tight`}>
-                        {d.name}
+                      <button
+                        type="button"
+                        onClick={() => (target.kind === "flow" ? setChosenIndex(i) : toggle(i))}
+                        aria-label={target.kind === "flow" ? "Escolher página" : "Incluir na importação"}
+                        className={`mt-0.5 w-4 h-4 border flex items-center justify-center shrink-0 ${
+                          target.kind === "flow" ? "rounded-full" : ""
+                        } ${picked ? "bg-white border-white" : "border-black bg-white"}`}
+                      >
+                        {picked && <Check className="w-3 h-3 text-black" />}
+                      </button>
+                      <FileText className={`w-4 h-4 shrink-0 mt-0.5 ${picked ? "text-white" : "text-black"}`} />
+                      <div className="flex-1 min-w-0 space-y-1">
+                        {target.kind === "folder" ? (
+                          <input
+                            value={d.name}
+                            onChange={(e) => rename(i, e.target.value)}
+                            className={`w-full px-2 py-1 text-[11px] font-bold uppercase tracking-tight border ${
+                              conflict ? "border-red-600 text-red-600" : "border-black text-black"
+                            } bg-white focus:outline-none`}
+                          />
+                        ) : (
+                          <div className="text-[11px] font-bold uppercase tracking-tight truncate">{d.name}</div>
+                        )}
+                        <div className={`text-[9px] uppercase tracking-tighter ${picked ? "text-gray-300" : "text-gray-500"}`}>
+                          {conflict ? conflict : d.svg ? "SVG pronto" : "SVG ausente: o fluxo ficará sem diagrama"}
+                        </div>
                       </div>
-                      <div className={`text-[9px] truncate uppercase tracking-tighter ${d.selected ? "text-gray-400" : "text-gray-500"}`}>
-                        {d.svgFile ? `✓ SVG PRONTO` : `⚠ SVG AUSENTE`}
-                      </div>
                     </div>
-                    <input
-                      type="checkbox"
-                      checked={d.selected}
-                      onChange={() => toggleDiagram(i)}
-                      className="sr-only"
-                    />
-                  </label>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
 
-          {/* Action buttons */}
           <div className="flex gap-3 pt-4 border-t border-black">
-            <button type="button" onClick={handleClose} className="flex-1 px-4 py-3 bg-white border border-black text-black text-[10px] font-black uppercase tracking-widest hover:bg-gray-100 transition-colors">
+            <button
+              type="button"
+              onClick={handleClose}
+              className="flex-1 px-4 py-3 bg-white border border-black text-[10px] font-black uppercase tracking-widest hover:bg-gray-100"
+            >
               Cancelar
             </button>
             <button
               onClick={handleImport}
-              disabled={loading || selectedCount === 0 || !folderId}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-black border border-black text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-30 hover:bg-gray-900 transition-colors"
+              disabled={!canImport}
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-black border border-black text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-30 hover:bg-gray-900"
             >
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-              Importar {selectedCount > 0 ? `(${selectedCount})` : ""}
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+              {target.kind === "folder"
+                ? `Importar${selectedCount > 0 ? ` (${selectedCount})` : ""}`
+                : "Substituir SVG e Bizagi"}
             </button>
           </div>
         </div>

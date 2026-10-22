@@ -11,6 +11,10 @@ export function folderExists(id: string): boolean {
   return !!getDb().select({ id: folders.id }).from(folders).where(eq(folders.id, id)).get();
 }
 
+export function flowExists(id: string): boolean {
+  return !!getDb().select({ id: flows.id }).from(flows).where(eq(flows.id, id)).get();
+}
+
 /** IDs da pasta informada e de todas as subpastas (CTE recursiva). */
 export function subtreeIds(folderId: string): string[] {
   return getSqlite()
@@ -51,13 +55,41 @@ export function insertFolder(name: string, parentId: string | null): string {
   return id;
 }
 
-export function insertFlow(input: {
+/** Nome já usado por outra pasta no mesmo nível (comparação sem diferenciar maiúsculas e espaços). */
+export function folderNameTaken(parentId: string | null, name: string, exceptId?: string): boolean {
+  const row = getSqlite()
+    .prepare(
+      `SELECT id FROM folders
+       WHERE parent_id IS ? AND lower(trim(name)) = lower(trim(?)) AND id IS NOT ?
+       LIMIT 1`
+    )
+    .get(parentId, name, exceptId ?? null);
+  return !!row;
+}
+
+/** Título já usado por outro fluxo na mesma pasta. */
+export function flowTitleTaken(folderId: string, title: string, exceptId?: string): boolean {
+  const row = getSqlite()
+    .prepare(
+      `SELECT id FROM flows
+       WHERE folder_id = ? AND lower(trim(title)) = lower(trim(?)) AND id IS NOT ?
+       LIMIT 1`
+    )
+    .get(folderId, title, exceptId ?? null);
+  return !!row;
+}
+
+export interface NewFlowInput {
+  id?: string;
   folderId: string;
   title: string;
-  svgUrl: string | null;
-  bizagiData: Record<string, unknown>;
-}): string {
-  const id = randomUUID();
+  svgUrl?: string | null;
+  pdfUrl?: string | null;
+  bizagiData?: Record<string, unknown> | null;
+}
+
+export function insertFlow(input: NewFlowInput): string {
+  const id = input.id ?? randomUUID();
   getDb()
     .insert(flows)
     .values({
@@ -65,8 +97,9 @@ export function insertFlow(input: {
       folder_id: input.folderId,
       title: input.title,
       slug: uniqueSlug(slugify(input.title) || "fluxo"),
-      svg_url: input.svgUrl,
-      bizagi_data: input.bizagiData,
+      svg_url: input.svgUrl ?? null,
+      pdf_url: input.pdfUrl ?? null,
+      bizagi_data: input.bizagiData ?? null,
     })
     .run();
   return id;
@@ -74,7 +107,7 @@ export function insertFlow(input: {
 
 /**
  * Exclui a pasta (e, por cascade, subpastas e fluxos).
- * Retorna os svg_url dos fluxos removidos para que o chamador apague os arquivos após o commit.
+ * Retorna as URLs de SVG e PDF dos fluxos removidos para que o chamador apague os arquivos após o commit.
  */
 export function deleteFolderTree(id: string): string[] {
   const sqlite = getSqlite();
@@ -82,22 +115,26 @@ export function deleteFolderTree(id: string): string[] {
   if (ids.length === 0) throw new Error("Pasta não encontrada.");
 
   const placeholders = ids.map(() => "?").join(",");
-  const svgUrls = sqlite
-    .prepare(`SELECT svg_url FROM flows WHERE folder_id IN (${placeholders})`)
+  const fileUrls = sqlite
+    .prepare(`SELECT svg_url, pdf_url FROM flows WHERE folder_id IN (${placeholders})`)
     .all(...ids)
-    .map((r) => (r as { svg_url: string | null }).svg_url)
+    .flatMap((r) => {
+      const row = r as { svg_url: string | null; pdf_url: string | null };
+      return [row.svg_url, row.pdf_url];
+    })
     .filter((u): u is string => !!u);
 
   sqlite.prepare("DELETE FROM folders WHERE id = ?").run(id);
-  return svgUrls;
+  return fileUrls;
 }
 
-export function deleteFlowRow(id: string): string | null {
+/** Exclui um fluxo. Retorna as URLs de arquivo (SVG e PDF) que devem ser apagadas após o commit. */
+export function deleteFlowRow(id: string): string[] {
   const db = getDb();
-  const row = db.select({ svg_url: flows.svg_url }).from(flows).where(eq(flows.id, id)).get();
+  const row = db.select({ svg_url: flows.svg_url, pdf_url: flows.pdf_url }).from(flows).where(eq(flows.id, id)).get();
   if (!row) throw new Error("Fluxo não encontrado.");
   db.delete(flows).where(eq(flows.id, id)).run();
-  return row.svg_url;
+  return [row.svg_url, row.pdf_url].filter((u): u is string => !!u);
 }
 
 export function renameFolderRow(id: string, name: string): void {
@@ -131,4 +168,54 @@ export function moveFlowRow(id: string, newFolderId: string): void {
   if (!folderExists(newFolderId)) throw new Error("Pasta de destino não encontrada.");
   const result = getDb().update(flows).set({ folder_id: newFolderId }).where(eq(flows.id, id)).run();
   if (result.changes === 0) throw new Error("Fluxo não encontrado.");
+}
+
+/**
+ * Atualiza os arquivos de um fluxo. Campos omitidos não mudam; null remove.
+ *
+ * Regra: o Bizagi (camada clicável) pertence ao SVG da mesma página. Trocar ou remover o SVG
+ * também remove o Bizagi, para que os itens clicáveis não fiquem desalinhados.
+ * O PDF é independente e não é afetado.
+ *
+ * Retorna as URLs de arquivo substituídas, que o chamador apaga após o commit.
+ */
+export function updateFlowFiles(
+  id: string,
+  changes: { svgUrl?: string | null; pdfUrl?: string | null; bizagiData?: Record<string, unknown> | null }
+): string[] {
+  const sqlite = getSqlite();
+  const row = sqlite.prepare("SELECT svg_url, pdf_url FROM flows WHERE id = ?").get(id) as
+    | { svg_url: string | null; pdf_url: string | null }
+    | undefined;
+  if (!row) throw new Error("Fluxo não encontrado.");
+
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  const obsolete: string[] = [];
+
+  if (changes.svgUrl !== undefined) {
+    if (row.svg_url && row.svg_url !== changes.svgUrl) obsolete.push(row.svg_url);
+    sets.push("svg_url = ?");
+    values.push(changes.svgUrl);
+    if (changes.bizagiData === undefined) {
+      // Trocar ou remover o SVG descarta a camada interativa desta página.
+      sets.push("bizagi_data = NULL");
+    }
+  }
+
+  if (changes.pdfUrl !== undefined) {
+    if (row.pdf_url && row.pdf_url !== changes.pdfUrl) obsolete.push(row.pdf_url);
+    sets.push("pdf_url = ?");
+    values.push(changes.pdfUrl);
+  }
+
+  if (changes.bizagiData !== undefined) {
+    sets.push("bizagi_data = ?");
+    values.push(changes.bizagiData === null ? null : JSON.stringify(changes.bizagiData));
+  }
+
+  if (sets.length > 0) {
+    sqlite.prepare(`UPDATE flows SET ${sets.join(", ")} WHERE id = ?`).run(...values, id);
+  }
+  return obsolete;
 }

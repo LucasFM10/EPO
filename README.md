@@ -119,7 +119,7 @@ npm run user:reset-password -- email@exemplo.gov.br      # redefine a senha e en
 printf '%s' "$SENHA" | npm run user:create -- email@exemplo.gov.br --password-stdin   # automação
 ```
 
-Regras: senha com pelo menos 12 caracteres; e-mail em minúsculas; a senha nunca é gravada em arquivo nem em log. Em Docker, prefixe com `docker compose exec app`.
+Regras: senha com pelo menos 5 caracteres; e-mail em minúsculas; a senha nunca é gravada em arquivo nem em log. Em Docker, prefixe com `docker compose exec app`.
 
 Tentativas de login são limitadas: 5 falhas por IP ou por e-mail em 15 minutos bloqueiam novas tentativas. O contador fica em memória, então reinicia junto com o processo.
 
@@ -158,11 +158,21 @@ docker compose --profile admin stop sqlite-web        # encerra
 
 Ele permite consultar tabelas, executar SQL e editar registros. Evite alterações estruturais enquanto a aplicação estiver em uso. Não use o Drizzle Studio.
 
+## Processos: fluxos, SVG, PDF e Bizagi
+
+- **Clique direito** em uma pasta: novo fluxo vazio, nova subpasta, importar Bizagi aqui, renomear, excluir.
+- **Clique direito** em um fluxo: renomear, anexar/trocar SVG, anexar/trocar PDF, importar Bizagi neste fluxo, remover SVG ou PDF, excluir.
+- Um fluxo pode ser criado vazio e receber os arquivos depois. Sem SVG, a aba Diagrama mostra uma mensagem.
+- Trocar ou remover o SVG também remove os itens clicáveis do Bizagi, porque eles pertencem ao SVG anterior. O PDF não é afetado.
+- Nomes repetidos (pasta no mesmo nível, fluxo na mesma pasta) são recusados antes de gravar. Escolha outro nome.
+- Qualquer pessoa vê os processos. Só quem está logado altera.
+- PDF: até 50 MB, validado pelo cabeçalho `%PDF-`, exibido em iframe com CSP `sandbox`.
+
 ## Exportar e importar dados (menu Dados)
 
 O botão discreto **Dados** no cabeçalho (visível só para logados) abre um menu:
 
-- **Exportar .zip:** baixa todas as pastas, fluxos, bizagi_data e SVGs no formato `epo-export` v1. É o mesmo formato gerado pelo botão Exportar da versão Supabase, então esses arquivos também são aceitos.
+- **Exportar .zip:** baixa todas as pastas, fluxos, bizagi_data, SVGs e PDFs no formato `epo-export` v2. A v1 (sem PDF) continua sendo aceita. É o mesmo formato gerado pelo botão Exportar da versão Supabase, então esses arquivos também são aceitos.
 - **Importar .zip:** **substitui todos os dados.** Antes de gravar, mostra quantas pastas e fluxos o arquivo tem e exige digitar `SUBSTITUIR`. Depois valida o arquivo inteiro (JSON, ids, SVGs), grava em uma transação e só então remove os SVGs antigos. Se algo falhar, nada muda.
 - Usuários e sessões **não** são alterados pela importação.
 - A rota `POST /api/import` exige sessão, origem igual ao host, o cabeçalho `X-Epo-Confirm: substituir` e no máximo 200 MB.

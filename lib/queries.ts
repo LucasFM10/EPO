@@ -10,6 +10,7 @@ const FLOW_LIST_COLUMNS = {
   title: flows.title,
   slug: flows.slug,
   svg_url: flows.svg_url,
+  pdf_url: flows.pdf_url,
   created_at: flows.created_at,
 };
 

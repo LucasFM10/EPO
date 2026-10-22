@@ -1,21 +1,46 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
-import { createPortal } from "react-dom";
-import { FolderOpen, FileText, ChevronRight, ChevronDown, Loader2, Plus, Upload, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
+import { FolderOpen, FileText, ChevronRight, ChevronDown, Loader2, MoreHorizontal } from "lucide-react";
 import { useAuth } from "@/lib/auth";
-import { renameFolder, renameFlow, deleteFolder, deleteFlow, moveFolder, moveFlow } from "@/lib/mutations";
+import { messageOf } from "@/lib/utils";
+import {
+  renameFolder,
+  renameFlow,
+  deleteFolder,
+  deleteFlow,
+  moveFolder,
+  moveFlow,
+  removeSvg,
+  removePdf,
+} from "@/lib/mutations";
+import ContextMenu, { ContextMenuItem } from "@/components/ContextMenu";
 import type { FolderTreeNode, Flow } from "@/lib/types";
+
+/** Ações que a barra lateral pede ao portal (que abre o diálogo ou o seletor de arquivo). */
+export type SidebarAction =
+  | { type: "newFolder"; parentId: string | null }
+  | { type: "newFlow"; folderId: string }
+  | { type: "importFolder"; folderId: string; folderName: string }
+  | { type: "importFlow"; flow: Flow }
+  | { type: "attach"; flow: Flow; fileKind: "svg" | "pdf" };
 
 interface SidebarProps {
   tree: FolderTreeNode[];
   loading: boolean;
   selectedFlowId: string | null;
   onSelectFlow: (flow: Flow) => void;
-  onCreateFolder: () => void;
-  onImportFlow: () => void;
+  onAction: (action: SidebarAction) => void;
   onDataChanged: () => void;
 }
+
+interface MenuState {
+  x: number;
+  y: number;
+  items: ContextMenuItem[];
+}
+
+type OpenMenu = (x: number, y: number, items: ContextMenuItem[]) => void;
 
 /* ─── Inline rename input ─── */
 function InlineRename({ value, onSave, onCancel }: { value: string; onSave: (v: string) => void; onCancel: () => void }) {
@@ -42,70 +67,20 @@ function InlineRename({ value, onSave, onCancel }: { value: string; onSave: (v: 
   );
 }
 
-/* ─── Context menu (3-dot) ─── */
-function ItemMenu({ onRename, onDelete }: { onRename: () => void; onDelete: () => void }) {
-  const [open, setOpen] = useState(false);
-  const [coords, setCoords] = useState({ top: 0, left: 0 });
-  const ref = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => { 
-      if (ref.current && !ref.current.contains(e.target as Node) && 
-          triggerRef.current && !triggerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
-  const handleToggle = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!open && triggerRef.current) {
-      const rect = triggerRef.current.getBoundingClientRect();
-      setCoords({ top: rect.bottom, left: rect.left });
-    }
-    setOpen(!open);
-  };
-
+/* ─── Botão de três pontos: abre o mesmo menu do clique direito ─── */
+function MoreButton({ onOpen }: { onOpen: (x: number, y: number) => void }) {
   return (
-    <div className="relative shrink-0 flex items-center">
-      <button
-        ref={triggerRef}
-        onClick={handleToggle}
-        className="p-1 border border-transparent hover:border-black text-gray-500 hover:text-black transition-colors opacity-0 group-hover:opacity-100"
-      >
-        <MoreHorizontal className="w-3.5 h-3.5" />
-      </button>
-      {open && typeof document !== "undefined" && createPortal(
-        <div 
-          ref={ref}
-          style={{ 
-            position: 'fixed', 
-            top: `${coords.top + 4}px`, 
-            left: `${coords.left - 120}px`,
-            zIndex: 9999 
-          }}
-          className="bg-white border border-black shadow-none py-1 min-w-[140px]"
-        >
-          <button
-            onClick={(e) => { e.stopPropagation(); setOpen(false); onRename(); }}
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-black hover:bg-black hover:text-white transition-colors"
-          >
-            <Pencil className="w-3 h-3" /> Renomear
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); setOpen(false); onDelete(); }}
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-600 hover:bg-red-600 hover:text-white transition-colors border-t border-gray-100 mt-1"
-          >
-            <Trash2 className="w-3 h-3" /> Excluir
-          </button>
-        </div>,
-        document.body
-      )}
-    </div>
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        onOpen(rect.left, rect.bottom + 4);
+      }}
+      aria-label="Ações"
+      className="p-1 border border-transparent hover:border-black text-gray-500 hover:text-black transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+    >
+      <MoreHorizontal className="w-3.5 h-3.5" />
+    </button>
   );
 }
 
@@ -115,6 +90,8 @@ function FolderItem({
   selectedFlowId,
   onSelectFlow,
   onDataChanged,
+  onAction,
+  onOpenMenu,
   isAdmin,
   depth = 0,
 }: {
@@ -122,6 +99,8 @@ function FolderItem({
   selectedFlowId: string | null;
   onSelectFlow: (flow: Flow) => void;
   onDataChanged: () => void;
+  onAction: (action: SidebarAction) => void;
+  onOpenMenu: OpenMenu;
   isAdmin: boolean;
   depth?: number;
 }) {
@@ -133,24 +112,53 @@ function FolderItem({
   const hasChildren = node.children.length > 0 || node.flows.length > 0;
 
   const handleRenameFolder = async (newName: string) => {
-    try { await renameFolder(node.folder.id, newName); onDataChanged(); } catch (e: any) { alert(e.message); }
+    try { await renameFolder(node.folder.id, newName); onDataChanged(); } catch (e) { alert(messageOf(e)); }
     setRenaming(false);
   };
 
   const handleDeleteFolder = async () => {
     if (!confirm(`Excluir a pasta "${node.folder.name}" e todo seu conteúdo?`)) return;
-    try { await deleteFolder(node.folder.id); onDataChanged(); } catch (e: any) { alert(e.message); }
+    try { await deleteFolder(node.folder.id); onDataChanged(); } catch (e) { alert(messageOf(e)); }
   };
 
   const handleRenameFlow = async (flowId: string, newTitle: string) => {
-    try { await renameFlow(flowId, newTitle); onDataChanged(); } catch (e: any) { alert(e.message); }
+    try { await renameFlow(flowId, newTitle); onDataChanged(); } catch (e) { alert(messageOf(e)); }
     setRenamingFlowId(null);
   };
 
   const handleDeleteFlow = async (flow: Flow) => {
     if (!confirm(`Excluir o fluxo "${flow.title}"?`)) return;
-    try { await deleteFlow(flow.id); onDataChanged(); } catch (e: any) { alert(e.message); }
+    try { await deleteFlow(flow.id); onDataChanged(); } catch (e) { alert(messageOf(e)); }
   };
+
+  const handleRemoveFile = async (flow: Flow, fileKind: "svg" | "pdf") => {
+    const label = fileKind === "svg" ? "SVG" : "PDF";
+    const extra = fileKind === "svg" ? " Se houver itens clicáveis do Bizagi, eles também serão removidos." : "";
+    if (!confirm(`Remover o ${label} do fluxo "${flow.title}"?${extra}`)) return;
+    try {
+      if (fileKind === "svg") await removeSvg(flow.id);
+      else await removePdf(flow.id);
+      onDataChanged();
+    } catch (e) { alert(messageOf(e)); }
+  };
+
+  const folderMenu = (): ContextMenuItem[] => [
+    { label: "Novo fluxo vazio", onSelect: () => onAction({ type: "newFlow", folderId: node.folder.id }) },
+    { label: "Nova subpasta", onSelect: () => onAction({ type: "newFolder", parentId: node.folder.id }) },
+    { label: "Importar Bizagi aqui", onSelect: () => onAction({ type: "importFolder", folderId: node.folder.id, folderName: node.folder.name }) },
+    { label: "Renomear", onSelect: () => setRenaming(true), separatorBefore: true },
+    { label: "Excluir", onSelect: handleDeleteFolder, danger: true },
+  ];
+
+  const flowMenu = (flow: Flow): ContextMenuItem[] => [
+    { label: "Renomear", onSelect: () => setRenamingFlowId(flow.id) },
+    { label: flow.svg_url ? "Trocar SVG" : "Anexar SVG", onSelect: () => onAction({ type: "attach", flow, fileKind: "svg" }), separatorBefore: true },
+    { label: flow.pdf_url ? "Trocar PDF" : "Anexar PDF", onSelect: () => onAction({ type: "attach", flow, fileKind: "pdf" }) },
+    { label: "Importar Bizagi neste fluxo", onSelect: () => onAction({ type: "importFlow", flow }) },
+    ...(flow.svg_url ? [{ label: "Remover SVG", onSelect: () => handleRemoveFile(flow, "svg") }] : []),
+    ...(flow.pdf_url ? [{ label: "Remover PDF", onSelect: () => handleRemoveFile(flow, "pdf") }] : []),
+    { label: "Excluir", onSelect: () => handleDeleteFlow(flow), danger: true, separatorBefore: true },
+  ];
 
   const handleDragStart = (e: React.DragEvent, id: string, type: 'folder' | 'flow') => {
     if (!isAdmin) return;
@@ -176,8 +184,8 @@ function FolderItem({
         await moveFlow(draggedId, targetFolderId);
       }
       onDataChanged();
-    } catch (err: any) {
-      alert(err.message);
+    } catch (err) {
+      alert(messageOf(err));
     } finally {
       dragCounter.current = 0;
       setIsDragOver(false);
@@ -202,6 +210,12 @@ function FolderItem({
           if (dragCounter.current === 0) setIsDragOver(false);
         }}
         onDrop={(e) => handleDrop(e, node.folder.id)}
+        onContextMenu={(e) => {
+          if (!isAdmin) return;
+          e.preventDefault();
+          e.stopPropagation();
+          onOpenMenu(e.clientX, e.clientY, folderMenu());
+        }}
         className={`group w-full flex items-center gap-2 px-2 py-1 cursor-pointer transition-colors ${
           isDragOver ? "bg-black text-white" : "hover:bg-gray-100 text-black"
         }`}
@@ -221,7 +235,7 @@ function FolderItem({
           )}
         </button>
         {isAdmin && !renaming && (
-          <ItemMenu onRename={() => setRenaming(true)} onDelete={handleDeleteFolder} />
+          <MoreButton onOpen={(x, y) => onOpenMenu(x, y, folderMenu())} />
         )}
       </div>
 
@@ -234,6 +248,8 @@ function FolderItem({
               selectedFlowId={selectedFlowId}
               onSelectFlow={onSelectFlow}
               onDataChanged={onDataChanged}
+              onAction={onAction}
+              onOpenMenu={onOpenMenu}
               isAdmin={isAdmin}
               depth={depth + 1}
             />
@@ -243,6 +259,12 @@ function FolderItem({
               <div
                 draggable={isAdmin && renamingFlowId !== flow.id}
                 onDragStart={(e) => handleDragStart(e, flow.id, 'flow')}
+                onContextMenu={(e) => {
+                  if (!isAdmin) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onOpenMenu(e.clientX, e.clientY, flowMenu(flow));
+                }}
                 className={`group w-full flex items-center gap-2 py-1 cursor-pointer transition-colors ${
                   selectedFlowId === flow.id
                     ? "bg-gray-200 border-l-2 border-black"
@@ -260,7 +282,7 @@ function FolderItem({
                   )}
                 </button>
                 {isAdmin && renamingFlowId !== flow.id && (
-                  <ItemMenu onRename={() => setRenamingFlowId(flow.id)} onDelete={() => handleDeleteFlow(flow)} />
+                  <MoreButton onOpen={(x, y) => onOpenMenu(x, y, flowMenu(flow))} />
                 )}
               </div>
             </li>
@@ -271,13 +293,26 @@ function FolderItem({
   );
 }
 
-export default function Sidebar({ tree, loading, selectedFlowId, onSelectFlow, onCreateFolder, onImportFlow, onDataChanged }: SidebarProps) {
+export default function Sidebar({ tree, loading, selectedFlowId, onSelectFlow, onAction, onDataChanged }: SidebarProps) {
   const { user } = useAuth();
   const isAdmin = !!user;
+  const [menu, setMenu] = useState<MenuState | null>(null);
+
+  const openMenu = useCallback<OpenMenu>((x, y, items) => setMenu({ x, y, items }), []);
+  const closeMenu = useCallback(() => setMenu(null), []);
+
+  // Clique direito no espaço vazio da lista: ações da raiz.
+  const handleBackgroundContext = (e: React.MouseEvent) => {
+    if (!isAdmin) return;
+    e.preventDefault();
+    openMenu(e.clientX, e.clientY, [
+      { label: "Nova pasta", onSelect: () => onAction({ type: "newFolder", parentId: null }) },
+    ]);
+  };
 
   return (
     <aside className="w-64 bg-white border-r border-black flex flex-col h-full text-black">
-      <div className="p-4 flex-1 overflow-y-auto">
+      <div className="p-4 flex-1 overflow-y-auto" onContextMenu={handleBackgroundContext}>
         <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4">
           Arquivos
         </h3>
@@ -286,7 +321,10 @@ export default function Sidebar({ tree, loading, selectedFlowId, onSelectFlow, o
             <Loader2 className="w-5 h-5 text-slate-500 animate-spin" />
           </div>
         ) : tree.length === 0 ? (
-          <p className="text-sm text-slate-500 italic px-2">Nenhum fluxo encontrado.</p>
+          <p className="text-sm text-slate-500 italic px-2">
+            Nenhum fluxo encontrado.
+            {isAdmin && " Clique com o botão direito aqui para criar uma pasta."}
+          </p>
         ) : (
           <ul className="space-y-0.5">
             {tree.map((node) => (
@@ -296,6 +334,8 @@ export default function Sidebar({ tree, loading, selectedFlowId, onSelectFlow, o
                 selectedFlowId={selectedFlowId}
                 onSelectFlow={onSelectFlow}
                 onDataChanged={onDataChanged}
+                onAction={onAction}
+                onOpenMenu={openMenu}
                 isAdmin={isAdmin}
               />
             ))}
@@ -304,20 +344,21 @@ export default function Sidebar({ tree, loading, selectedFlowId, onSelectFlow, o
       </div>
 
       {isAdmin && (
-        <div className="p-4 border-t border-black space-y-2 bg-gray-50">
+        <div className="p-4 border-t border-black bg-gray-50">
           <button
-            onClick={onCreateFolder}
+            onClick={() => onAction({ type: "newFolder", parentId: null })}
             className="w-full py-2 bg-white border border-black hover:bg-gray-100 text-black text-xs font-bold uppercase transition-colors"
           >
             + Nova Pasta
           </button>
-          <button
-            onClick={onImportFlow}
-            className="w-full py-2 bg-black text-white text-xs font-bold uppercase hover:bg-gray-800 transition-colors"
-          >
-            Importar Fluxo
-          </button>
+          <p className="mt-2 text-[10px] text-gray-500 uppercase tracking-tight">
+            Clique com o botão direito em pastas e fluxos para mais ações.
+          </p>
         </div>
+      )}
+
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={closeMenu} />
       )}
     </aside>
   );

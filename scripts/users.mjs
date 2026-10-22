@@ -14,7 +14,7 @@ import { runMigrations } from "./migrate.mjs";
 
 // Mesmos parâmetros de lib/server/password.ts (Argon2id, OWASP).
 const HASH_OPTIONS = { algorithm: 2 /* Argon2id */, memoryCost: 19456, timeCost: 2, parallelism: 1 };
-const MIN_PASSWORD = 12;
+const MIN_PASSWORD = 5;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function normalizeEmail(email) {

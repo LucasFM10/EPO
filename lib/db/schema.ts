@@ -32,6 +32,8 @@ export const flows = sqliteTable(
     slug: text("slug").notNull(),
     // Caminho público do SVG local (ex.: /api/uploads/<arquivo>.svg) ou null.
     svg_url: text("svg_url"),
+    // Documento PDF associado ao fluxo (/api/uploads/<arquivo>.pdf) ou null. Opcional.
+    pdf_url: text("pdf_url"),
     // JSON original exportado pelo Bizagi (configuration.json), armazenado como texto.
     bizagi_data: text("bizagi_data", { mode: "json" }).$type<Record<string, unknown>>(),
     created_at: text("created_at").notNull().$defaultFn(nowIso),

@@ -11,6 +11,7 @@ export interface Flow {
   title: string;
   slug: string;
   svg_url: string | null;
+  pdf_url: string | null;
   bizagi_data: Record<string, unknown> | null;
   created_at: string;
 }

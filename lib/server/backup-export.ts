@@ -17,6 +17,7 @@ interface FlowRow {
   title: string;
   slug: string;
   svg_url: string | null;
+  pdf_url: string | null;
   bizagi_data: string | null;
   created_at: string;
 }
@@ -31,17 +32,29 @@ export async function buildExportZip(): Promise<{ buffer: Buffer; fileName: stri
     .prepare("SELECT id, name, parent_id, created_at FROM folders ORDER BY created_at")
     .all() as FolderRow[];
   const flows = sqlite
-    .prepare("SELECT id, folder_id, title, slug, svg_url, bizagi_data, created_at FROM flows ORDER BY title")
+    .prepare("SELECT id, folder_id, title, slug, svg_url, pdf_url, bizagi_data, created_at FROM flows ORDER BY title")
     .all() as FlowRow[];
 
   const zip = new JSZip();
+  // Lê o arquivo de um upload, se ele ainda existir no disco.
+  const readUpload = (url: string | null): Buffer | null => {
+    const name = fileNameFromUploadUrl(url);
+    const full = name ? resolveUpload(name) : null;
+    return full && fs.existsSync(full) ? fs.readFileSync(full) : null;
+  };
+
   const flowsOut = flows.map((flow) => {
     let svg: string | null = null;
-    const name = fileNameFromUploadUrl(flow.svg_url);
-    const full = name ? resolveUpload(name) : null;
-    if (full && fs.existsSync(full)) {
+    const svgData = readUpload(flow.svg_url);
+    if (svgData) {
       svg = `svg/${flow.id}.svg`;
-      zip.file(svg, fs.readFileSync(full));
+      zip.file(svg, svgData);
+    }
+    let pdf: string | null = null;
+    const pdfData = readUpload(flow.pdf_url);
+    if (pdfData) {
+      pdf = `pdf/${flow.id}.pdf`;
+      zip.file(pdf, pdfData);
     }
     return {
       id: flow.id,
@@ -49,6 +62,7 @@ export async function buildExportZip(): Promise<{ buffer: Buffer; fileName: stri
       title: flow.title,
       slug: flow.slug,
       svg,
+      pdf,
       bizagi_data: flow.bizagi_data ? JSON.parse(flow.bizagi_data) : null,
       created_at: flow.created_at,
     };
