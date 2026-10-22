@@ -1,0 +1,44 @@
+# EPO — Escritório de Processos
+#
+# Produção (Coolify ou servidor próprio):
+#   docker compose up -d --build
+#
+# Local (publica a porta 3000 no host):
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+#
+# Administração do banco (opcional, sob demanda, só em 127.0.0.1):
+#   docker compose --profile admin up -d sqlite-web
+#   docker compose --profile admin stop sqlite-web
+name: epo
+
+services:
+  app:
+    build: .
+    image: epo:latest
+    restart: unless-stopped
+    # Sem porta publicada no host: o proxy (Coolify/Traefik) encaminha para a porta 3000 interna.
+    expose:
+      - "3000"
+    environment:
+      DATA_DIR: /app/data
+    volumes:
+      # Banco SQLite (epo.sqlite, com WAL) e SVGs enviados. Sobrevive a rebuilds e atualizações.
+      - epo-data:/app/data
+    stop_grace_period: 20s
+
+  sqlite-web:
+    image: coleifer/sqlite-web:latest
+    profiles: ["admin"]
+    restart: "no"
+    entrypoint: ["sqlite_web"]
+    # Mesmo UID da aplicação: evita arquivos -wal/-shm que a app não consegue escrever.
+    user: "1001:1001"
+    command: ["-H", "0.0.0.0", "-p", "8080", "-x", "-f", "/data/epo.sqlite"]
+    volumes:
+      - epo-data:/data
+    # Publicado apenas no loopback do servidor. Acesse via túnel SSH (ver README).
+    ports:
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  epo-data:

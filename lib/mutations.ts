@@ -1,166 +1,99 @@
-import { supabase } from "./supabase";
+"use server";
 
-/**
- * Verifies the user is authenticated before write operations.
- */
-async function requireAuth() {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) {
-    throw new Error("Você precisa estar logado para realizar esta ação.");
-  }
-  return session;
+import { eq } from "drizzle-orm";
+import { getDb, getSqlite, folders, flows } from "./db";
+import { requireUser } from "./server/session";
+import { MAX_BIZAGI_JSON_BYTES } from "./server/config";
+import { validateSvg } from "./server/svg";
+import { removeUpload, saveSvg, uploadUrl } from "./server/uploads";
+import * as repo from "./server/repo";
+
+const MAX_NAME = 200;
+
+/** Valida e normaliza um texto de nome/título. */
+function cleanName(value: unknown, label: string): string {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) throw new Error(`Informe ${label}.`);
+  if (text.length > MAX_NAME) throw new Error(`O texto deve ter no máximo ${MAX_NAME} caracteres.`);
+  return text;
 }
 
-/**
- * Creates a new folder.
- */
+/** Cria uma pasta. Exige login. */
 export async function createFolder(name: string, parentId: string | null) {
-  await requireAuth();
-
-  const { data, error } = await supabase
-    .from("folders")
-    .insert({ name, parent_id: parentId })
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data;
+  await requireUser();
+  const cleaned = cleanName(name, "o nome da pasta");
+  if (parentId && !repo.folderExists(parentId)) throw new Error("Pasta não encontrada.");
+  const id = repo.insertFolder(cleaned, parentId || null);
+  return getDb().select().from(folders).where(eq(folders.id, id)).get();
 }
 
 /**
- * Slugifies a string for URL-friendly slugs.
- */
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-/**
- * Creates a new flow from a Bizagi JSON export.
- * Optionally uploads an SVG file to Supabase Storage.
+ * Cria um fluxo a partir do JSON do Bizagi, com SVG opcional.
+ * O SVG é gravado antes do INSERT e removido se o INSERT falhar (sem arquivo órfão).
  */
 export async function createFlow(
   folderId: string,
   title: string,
   bizagiJson: Record<string, unknown>,
-  svgFile?: File
+  svgContent?: string | null
 ) {
-  let slug = slugify(title);
-  let svgUrl: string | null = null;
+  await requireUser();
+  const cleanedTitle = cleanName(title, "o título do fluxo");
+  if (!repo.folderExists(folderId)) throw new Error("Pasta não encontrada.");
 
-  // Upload SVG if provided
-  if (svgFile) {
-    const fileName = `${slug}-${Date.now()}.svg`;
-    const { error: uploadError } = await supabase.storage
-      .from("flow-assets")
-      .upload(fileName, svgFile, { contentType: "image/svg+xml" });
-
-    if (uploadError) throw uploadError;
-
-    const { data: urlData } = supabase.storage
-      .from("flow-assets")
-      .getPublicUrl(fileName);
-
-    svgUrl = urlData.publicUrl;
+  if (!bizagiJson || typeof bizagiJson !== "object" || Array.isArray(bizagiJson)) {
+    throw new Error("O JSON do Bizagi é inválido.");
+  }
+  if (Buffer.byteLength(JSON.stringify(bizagiJson), "utf8") > MAX_BIZAGI_JSON_BYTES) {
+    throw new Error("O JSON do Bizagi excede o tamanho máximo permitido.");
   }
 
-  // Attempt insert, handling potential slug duplicate
-  const insertFlow = async (currentSlug: string): Promise<any> => {
-    const { data, error } = await supabase
-      .from("flows")
-      .insert({
-        folder_id: folderId,
-        title,
-        slug: currentSlug,
-        svg_url: svgUrl,
-        bizagi_data: bizagiJson,
-      })
-      .select()
-      .single();
+  let svgUrl: string | null = null;
+  if (svgContent) {
+    const error = validateSvg(svgContent);
+    if (error) throw new Error(error);
+    svgUrl = uploadUrl(await saveSvg(svgContent));
+  }
 
-    if (error) {
-      // If error is unique constraint violation on slug, try a new one
-      if (error.code === "23505" && error.message.includes("slug")) {
-        const newSlug = `${currentSlug}-${Math.random().toString(36).substring(2, 5)}`;
-        return insertFlow(newSlug);
-      }
-      throw error;
-    }
-    return data;
-  };
-
-  return insertFlow(slug);
+  try {
+    const id = repo.insertFlow({ folderId, title: cleanedTitle, svgUrl, bizagiData: bizagiJson });
+    return getDb().select().from(flows).where(eq(flows.id, id)).get();
+  } catch (err) {
+    await removeUpload(svgUrl);
+    throw err;
+  }
 }
 
-/**
- * Deletes a folder and all its children (cascading).
- */
+/** Exclui uma pasta com subpastas e fluxos. Arquivos SVG são removidos após o commit. */
 export async function deleteFolder(id: string) {
-  await requireAuth();
-  const { error } = await supabase.from("folders").delete().eq("id", id);
-  if (error) throw error;
+  await requireUser();
+  const svgUrls = getSqlite().transaction(() => repo.deleteFolderTree(id))();
+  for (const url of svgUrls) await removeUpload(url);
 }
 
-/**
- * Deletes a flow.
- */
+/** Exclui um fluxo e seu SVG. */
 export async function deleteFlow(id: string) {
-  await requireAuth();
-  const { error } = await supabase.from("flows").delete().eq("id", id);
-  if (error) throw error;
+  await requireUser();
+  const svgUrl = getSqlite().transaction(() => repo.deleteFlowRow(id))();
+  await removeUpload(svgUrl);
 }
 
-/**
- * Renames a folder.
- */
 export async function renameFolder(id: string, newName: string) {
-  await requireAuth();
-  const { error } = await supabase
-    .from("folders")
-    .update({ name: newName })
-    .eq("id", id);
-  if (error) throw error;
+  await requireUser();
+  repo.renameFolderRow(id, cleanName(newName, "o nome da pasta"));
 }
 
-/**
- * Renames a flow.
- */
 export async function renameFlow(id: string, newTitle: string) {
-  await requireAuth();
-  const { error } = await supabase
-    .from("flows")
-    .update({ title: newTitle })
-    .eq("id", id);
-  if (error) throw error;
+  await requireUser();
+  repo.renameFlowRow(id, cleanName(newTitle, "o título do fluxo"));
 }
-/**
- * Moves a folder to a new parent.
- */
+
 export async function moveFolder(id: string, newParentId: string | null) {
-  await requireAuth();
-  
-  // Prevent moving a folder into itself (basic check)
-  if (id === newParentId) throw new Error("Não é possível mover uma pasta para dentro dela mesma.");
-
-  const { error } = await supabase
-    .from("folders")
-    .update({ parent_id: newParentId })
-    .eq("id", id);
-  if (error) throw error;
+  await requireUser();
+  repo.moveFolderRow(id, newParentId || null);
 }
 
-/**
- * Moves a flow to a new folder.
- */
 export async function moveFlow(id: string, newFolderId: string) {
-  await requireAuth();
-  const { error } = await supabase
-    .from("flows")
-    .update({ folder_id: newFolderId })
-    .eq("id", id);
-  if (error) throw error;
+  await requireUser();
+  repo.moveFlowRow(id, newFolderId);
 }

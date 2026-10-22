@@ -14,6 +14,7 @@ import { AlignLeft, Info, X } from "lucide-react";
 import DiagramBackgroundNode, { DiagramBackgroundNodeType } from "./DiagramBackgroundNode";
 import HotspotNode, { HotspotNodeType } from "./HotspotNode";
 import type { Flow } from "@/lib/types";
+import { sanitizeHtml } from "@/lib/sanitize-html";
 
 const nodeTypes = {
   diagramBackground: DiagramBackgroundNode,
@@ -172,7 +173,7 @@ export default function FlowViewer({ flow }: FlowViewerProps) {
                 {selectedNodeData.description ? (
                   <div
                     className="text-base leading-relaxed text-black prose prose-sm max-w-none"
-                    dangerouslySetInnerHTML={{ __html: selectedNodeData.description }}
+                    dangerouslySetInnerHTML={{ __html: sanitizeHtml(selectedNodeData.description) }}
                   />
                 ) : (
                   <p className="text-sm text-gray-400 italic">Nenhuma descrição disponível para este elemento.</p>

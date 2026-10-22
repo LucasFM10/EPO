@@ -161,12 +161,8 @@ export default function ImportFlowDialog({ open, onClose, tree, onCreated }: Imp
       const selected = diagrams.filter((d) => d.selected);
 
       for (const diagram of selected) {
-        await createFlow(
-          folderId,
-          diagram.name,
-          diagram.pageData,
-          diagram.svgFile || undefined
-        );
+        const svgContent = diagram.svgFile ? await diagram.svgFile.text() : null;
+        await createFlow(folderId, diagram.name, diagram.pageData, svgContent);
       }
 
       // Reset state
