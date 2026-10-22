@@ -157,17 +157,17 @@ docker compose --profile admin stop sqlite-web        # encerra
 
 Ele permite consultar tabelas, executar SQL e editar registros. Evite alterações estruturais enquanto a aplicação estiver em uso. Não use o Drizzle Studio.
 
-## Importar a exportação da versão Supabase
+## Exportar e importar dados (menu Dados)
 
-O botão **Importar** (ao lado de **Sair**) recebe o .zip gerado pelo botão **Exportar** da branch `main`.
+O botão discreto **Dados** no cabeçalho (visível só para logados) abre um menu:
 
-- O arquivo deve conter `epo-export.json` (formato `epo-export`, versão 1) e os SVGs em `svg/<id>.svg`.
-- Os ids originais de pastas e fluxos são preservados.
-- Nada existente é apagado ou alterado. Pastas e fluxos com o mesmo id são pulados, então importar o mesmo arquivo duas vezes não duplica dados.
-- Slugs em conflito recebem sufixo automático.
-- SVGs são validados com as mesmas regras do upload (sem script, iframe, handlers `on*` etc.). SVGs recusados são listados no resumo, e o fluxo é criado sem diagrama.
-- A importação é tudo ou nada: se o banco falhar, os SVGs já gravados são removidos.
-- A rota `POST /api/import` exige sessão e origem igual ao host da requisição. Limite: 200 MB.
+- **Exportar .zip:** baixa todas as pastas, fluxos, bizagi_data e SVGs no formato `epo-export` v1. É o mesmo formato gerado pelo botão Exportar da versão Supabase, então esses arquivos também são aceitos.
+- **Importar .zip:** **substitui todos os dados.** Antes de gravar, mostra quantas pastas e fluxos o arquivo tem e exige digitar `SUBSTITUIR`. Depois valida o arquivo inteiro (JSON, ids, SVGs), grava em uma transação e só então remove os SVGs antigos. Se algo falhar, nada muda.
+- Usuários e sessões **não** são alterados pela importação.
+- A rota `POST /api/import` exige sessão, origem igual ao host, o cabeçalho `X-Epo-Confirm: substituir` e no máximo 200 MB.
+- SVGs que não passam na validação de upload são ignorados e listados no resumo; o fluxo é criado sem diagrama.
+
+Para guardar a situação atual antes de importar, use **Dados → Exportar .zip**.
 
 ## Arquivos persistentes
 

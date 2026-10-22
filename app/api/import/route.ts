@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { requireUser, getSessionUser } from "@/lib/server/session";
+import { getSessionUser } from "@/lib/server/session";
 import { importExportZip, ImportError, MAX_IMPORT_BYTES } from "@/lib/server/backup-import";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Importa o .zip exportado pela branch main.
- * Exige sessão válida. Rejeita requisições de outra origem (proteção CSRF extra, além do SameSite=Lax).
+ * Substitui todas as pastas e fluxos pelos do .zip exportado.
+ * Exige sessão, origem igual ao host e o cabeçalho X-Epo-Confirm: substituir.
  */
 export async function POST(req: Request) {
   const origin = req.headers.get("origin");
@@ -19,13 +19,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Você precisa estar logado para importar." }, { status: 401 });
   }
 
+  if (req.headers.get("x-epo-confirm") !== "substituir") {
+    return NextResponse.json(
+      { error: "Confirmação ausente. A importação substitui todos os dados." },
+      { status: 400 }
+    );
+  }
+
   const declared = Number(req.headers.get("content-length") || 0);
   if (declared > MAX_IMPORT_BYTES) {
     return NextResponse.json({ error: "O arquivo excede o tamanho máximo de 200 MB." }, { status: 413 });
   }
 
   try {
-    await requireUser();
     const buffer = Buffer.from(await req.arrayBuffer());
     const report = await importExportZip(buffer);
     return NextResponse.json(report);
