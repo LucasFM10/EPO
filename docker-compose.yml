@@ -6,9 +6,7 @@
 # Local (publica a porta 3000 no host):
 #   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 #
-# Administração do banco (opcional, sob demanda, só em 127.0.0.1):
-#   docker compose --profile admin up -d sqlite-web
-#   docker compose --profile admin stop sqlite-web
+# Administração do banco: a aplicação expõe /admin/db (exige login). O sqlite-web não é publicado.
 name: epo
 
 services:
@@ -28,17 +26,18 @@ services:
 
   sqlite-web:
     image: coleifer/sqlite-web:latest
-    profiles: ["admin"]
-    restart: "no"
+    restart: unless-stopped
     entrypoint: ["sqlite_web"]
     # Mesmo UID da aplicação: evita arquivos -wal/-shm que a app não consegue escrever.
     user: "1001:1001"
-    command: ["-H", "0.0.0.0", "-p", "8080", "-x", "-f", "/data/epo.sqlite"]
+    # Somente leitura e atrás do prefixo /admin/db. Não tem login próprio: o acesso
+    # é feito pela rota /admin/db da própria aplicação, que exige sessão.
+    command: ["-H", "0.0.0.0", "-p", "8080", "-x", "-r", "-u", "/admin/db", "-f", "/data/epo.sqlite"]
     volumes:
       - epo-data:/data
-    # Publicado apenas no loopback do servidor. Acesse via túnel SSH (ver README).
-    ports:
-      - "127.0.0.1:8080:8080"
+    # Sem "ports": o serviço não é publicado. Só a aplicação acessa, pela rede interna do Compose.
+    expose:
+      - "8080"
 
 volumes:
   epo-data:

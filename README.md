@@ -144,19 +144,12 @@ docker compose start app
 
 O restore confere o checksum e o `integrity_check` antes de substituir. O estado anterior vai para `<DATA_DIR>/pre-restore-<timestamp>/`.
 
-## Administrar o banco com sqlite-web (opcional)
+## Administrar o banco (sqlite-web em /admin/db)
 
-O serviço `sqlite-web` só sobe sob demanda e fica publicado apenas em `127.0.0.1` do servidor. Não há exposição pública.
-
-```bash
-docker compose --profile admin up -d sqlite-web       # inicia
-# No seu computador, abra o túnel SSH:
-ssh -L 8080:127.0.0.1:8080 usuario@servidor
-# Acesse http://localhost:8080
-docker compose --profile admin stop sqlite-web        # encerra
-```
-
-Ele permite consultar tabelas, executar SQL e editar registros. Evite alterações estruturais enquanto a aplicação estiver em uso. Não use o Drizzle Studio.
+- Acesse **https://seu-dominio/admin/db** (ou http://localhost:3000/admin/db localmente). Sem login, a página redireciona para /login.
+- O sqlite-web roda como serviço interno (rede do Compose), sem porta publicada. A rota /admin/db da aplicação confere a sessão antes de encaminhar cada requisição.
+- O sqlite-web está em **somente leitura** (`-r`): consulta tabelas e executa SELECT, mas não altera registros. Para permitir edição, remova `-r` do `command` em docker-compose.yml, sabendo que os hashes de senha ficam visíveis e editáveis para quem está logado.
+- A senha de usuários nunca aparece em claro: a tabela users guarda só o hash Argon2id.
 
 ## Processos: fluxos, SVG, PDF e Bizagi
 
