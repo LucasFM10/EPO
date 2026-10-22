@@ -15,7 +15,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (!authLoading && user) {
-      router.replace("/");
+      router.replace("/portal");
     }
   }, [user, authLoading, router]);
 

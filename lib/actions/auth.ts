@@ -59,7 +59,7 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
 
   clearFailures(`email:${email}`);
   await startSession(user.id);
-  redirect("/");
+  redirect("/portal");
 }
 
 export async function logout(): Promise<void> {

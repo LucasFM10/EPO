@@ -37,7 +37,8 @@ Navegador ──► Next.js (Server Components + Server Actions + Route Handlers
 
 ```
 app/
-  (portal)/            portal (página protegida por verificação de sessão no servidor)
+  page.tsx             landing pública (/), sem autenticação
+  (portal)/portal/     portal (/portal), protegido por verificação de sessão no servidor
   login/               tela de login
   embed/[slug]/        fluxo incorporável
   fluxo/[slug]/        visualização do fluxo

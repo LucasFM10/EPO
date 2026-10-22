@@ -42,7 +42,7 @@ export default function FluxoPage() {
       <div className="flex flex-col items-center justify-center h-screen bg-[#0d1f35] text-white p-6 text-center">
         <h1 className="text-2xl font-bold mb-4">Fluxo não encontrado</h1>
         <p className="text-white/60 mb-8">Pode ter sido removido ou o link está incorreto.</p>
-        <Link href="/" className="bg-[#c8a84b] text-[#0d1f35] px-6 py-2 rounded-md font-bold">
+        <Link href="/portal" className="bg-[#c8a84b] text-[#0d1f35] px-6 py-2 rounded-md font-bold">
           Voltar ao Portal
         </Link>
       </div>
@@ -53,7 +53,7 @@ export default function FluxoPage() {
     <div className="flex flex-col h-screen bg-[#0d1f35]">
       <header className="px-6 py-4 border-b border-white/10 flex items-center justify-between bg-[#0d1f35]/80 backdrop-blur-md">
         <div className="flex items-center gap-4">
-          <Link href="/" className="text-white/60 hover:text-white transition-colors">
+          <Link href="/portal" className="text-white/60 hover:text-white transition-colors">
             <ArrowLeft className="w-5 h-5" />
           </Link>
           <h1 className="text-white font-bold text-lg">{flow.title}</h1>

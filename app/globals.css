@@ -2,6 +2,86 @@
 
 @theme {
   --font-sans: var(--font-poppins), sans-serif;
+
+  /* Paleta institucional (derivada das peças do TJPB) */
+  --color-tjpb-ink: #071c2e;
+  --color-tjpb-night: #0a1e31;
+  --color-tjpb-blue: #0c3c5e;
+  --color-tjpb-line: #1d5a86;
+  --color-tjpb-frame: #0f3e61;
+  --color-tjpb-mist: #eaf1f7;
+  --color-tjpb-gold: #c8a84b;
+}
+
+/* ---------- Landing pública ---------- */
+
+@keyframes landing-flow {
+  to {
+    stroke-dashoffset: -48;
+  }
+}
+
+@keyframes landing-float {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  50% {
+    transform: translate3d(0, -10px, 0) rotate(1.5deg);
+  }
+}
+
+@keyframes landing-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes landing-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.landing-flow {
+  stroke-dasharray: 6 10;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .landing-flow {
+    animation: landing-flow 1.6s linear infinite;
+  }
+  .landing-float {
+    animation: landing-float 9s ease-in-out infinite;
+  }
+  .landing-pulse {
+    animation: landing-pulse 3.2s ease-in-out infinite;
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  .landing-spin {
+    animation: landing-spin 40s linear infinite;
+    transform-box: view-box;
+    transform-origin: center;
+  }
+
+  /* Revelação ao rolar: só oculta quando o JS marcou a página como pronta. */
+  .landing-ready .reveal:not(.is-visible) {
+    opacity: 0;
+    transform: translate3d(0, 24px, 0);
+  }
+  .reveal {
+    transition:
+      opacity 0.8s cubic-bezier(0.22, 1, 0.36, 1),
+      transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+    transition-delay: var(--reveal-delay, 0ms);
+  }
 }
 
 @layer base {
